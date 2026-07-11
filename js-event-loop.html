@@ -1,0 +1,1664 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JavaScript 단일 스레드 이벤트 루프 — WebGL 시각화</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   TOKENS — Ethereal Glass on OLED black, restrained gold accent
+   ============================================================ */
+:root {
+  --bg:            #050505;
+  --panel:         rgba(255,255,255,0.028);
+  --panel-core:    rgba(10,11,16,0.72);
+  --hairline:      rgba(255,255,255,0.09);
+  --hairline-soft: rgba(255,255,255,0.05);
+  --text:          #EDEDF2;
+  --text-2:        rgba(237,237,242,0.62);
+  --text-3:        rgba(237,237,242,0.38);
+
+  --gold:      #F5C044;  /* Executing / JS accent */
+  --gold-dim:  rgba(245,192,68,0.14);
+  --violet:    #A78BFA;  /* Microtask */
+  --violet-dim:rgba(167,139,250,0.13);
+  --cyan:      #5EDBD5;  /* Task */
+  --cyan-dim:  rgba(94,219,213,0.12);
+  --blue:      #7BA6F5;  /* Runtime / waiting */
+  --blue-dim:  rgba(123,166,245,0.12);
+  --green:     #6EE7A0;  /* fulfilled / completed */
+  --red:       #F87171;
+
+  --sans: "Space Grotesk", "IBM Plex Sans KR", "Pretendard", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, monospace;
+
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --r-lg: 1.4rem;
+  --r-md: 0.9rem;
+  --r-sm: 0.55rem;
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body { height:100%; }
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+* { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.12) transparent; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.5;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ============================================================
+   BACKGROUND LAYERS — WebGL grid + CSS mesh orbs + grain
+   ============================================================ */
+#gl {
+  position: fixed; inset: 0;
+  width: 100%; height: 100%;
+  display: block;
+  z-index: 0;
+}
+.orbs { position: fixed; inset: 0; z-index: 1; pointer-events: none; overflow: hidden; }
+.orbs::before, .orbs::after {
+  content: ""; position: absolute; border-radius: 50%;
+  filter: blur(120px); opacity: 0.16;
+}
+.orbs::before {
+  width: 52vw; height: 52vw; left: -18vw; top: -28vw;
+  background: radial-gradient(circle, #8B6FE8, transparent 65%);
+}
+.orbs::after {
+  width: 46vw; height: 46vw; right: -16vw; bottom: -26vw;
+  background: radial-gradient(circle, #C79A2E, transparent 65%);
+  opacity: 0.10;
+}
+.grain {
+  position: fixed; inset: 0; z-index: 60; pointer-events: none; opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+}
+
+/* ============================================================
+   APP SHELL
+   ============================================================ */
+.app {
+  position: relative; z-index: 10;
+  height: 100dvh;
+  display: flex; flex-direction: column;
+  padding: 18px 22px 0;
+  gap: 12px;
+  max-width: 1760px; margin: 0 auto;
+}
+
+/* ---------- header ---------- */
+header {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 24px; flex: none; padding: 2px 4px;
+}
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.35} }
+header h1 {
+  font-size: clamp(24px, 2.3vw, 34px); font-weight: 700;
+  letter-spacing: -0.015em; line-height: 1.2;
+}
+header h1 em { font-style: normal; color: var(--gold); }
+header .sub { color: var(--text-3); font-size: 15px; margin-top: 4px; }
+
+.priority {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--text-3); white-space: nowrap;
+  border: 1px solid var(--hairline-soft); border-radius: 999px;
+  padding: 9px 18px; background: rgba(255,255,255,0.02);
+}
+.priority b { color: var(--text-2); font-weight: 600; }
+.priority .sep { color: var(--text-3); opacity: 0.6; }
+
+/* ---------- stage grid ---------- */
+.stage {
+  flex: 1; min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(300px, 360px) 1fr minmax(260px, 320px);
+  gap: 12px;
+}
+.col { display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; }
+
+/* ---------- double-bezel panel ---------- */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--hairline-soft);
+  border-radius: var(--r-lg);
+  padding: 5px;
+  display: flex; flex-direction: column; min-height: 0;
+  box-shadow: 0 24px 60px -32px rgba(0,0,0,0.8);
+}
+.panel-core {
+  background: var(--panel-core);
+  border: 1px solid var(--hairline-soft);
+  border-radius: calc(var(--r-lg) - 5px);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.05);
+  backdrop-filter: blur(14px);
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.panel-head {
+  flex: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid var(--hairline-soft);
+}
+.panel-head .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.panel-head .name {
+  font-size: 13.5px; font-weight: 600; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--text-2);
+}
+.panel-head .hint { font-size: 12px; color: var(--text-3); margin-left: auto; text-align: right; }
+.panel-head .count {
+  margin-left: auto; font-family: var(--mono); font-size: 12.5px;
+  color: var(--text-3); border: 1px solid var(--hairline-soft);
+  border-radius: 999px; padding: 1px 8px; min-width: 26px; text-align: center;
+  transition: color 0.3s, border-color 0.3s;
+}
+.panel-head .count.hot { color: var(--gold); border-color: rgba(245,192,68,0.4); }
+
+/* ---------- machine panels — the runtime "structure" ----------
+   Call Stack / Runtime APIs / Queues / Event Loop get an accent
+   frame + HUD corner brackets + dot-grid board so they read as
+   architecture, distinct from the source code panel. */
+.panel.machine {
+  position: relative;
+  border-color: color-mix(in srgb, var(--ac) 30%, transparent);
+  background: color-mix(in srgb, var(--ac) 4%, rgba(255,255,255,0.02));
+  box-shadow: 0 24px 60px -32px rgba(0,0,0,0.8),
+              0 0 44px -20px color-mix(in srgb, var(--ac) 60%, transparent);
+  transition: border-color 0.55s var(--ease), box-shadow 0.55s var(--ease);
+}
+/* step activity flash — the panel receiving a card / output lights up */
+.panel.machine.flash {
+  border-color: color-mix(in srgb, var(--ac) 85%, white 15%);
+  box-shadow: 0 24px 60px -32px rgba(0,0,0,0.8),
+              0 0 0 1.5px var(--ac),
+              0 0 60px -6px var(--ac);
+}
+.panel.machine.flash > .panel-core { border-top-color: var(--ac); }
+.panel.machine.flash .panel-head {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--ac) 24%, transparent), transparent 75%);
+}
+.panel.machine.flash::before, .panel.machine.flash::after {
+  border-color: var(--ac);
+}
+.panel.machine::before, .panel.machine::after {
+  content: ""; position: absolute; width: 16px; height: 16px;
+  border: 1.5px solid color-mix(in srgb, var(--ac) 75%, transparent);
+  pointer-events: none;
+  transition: border-color 0.55s var(--ease);
+}
+.panel.machine::before { top: -1px; left: -1px; border-right: none; border-bottom: none; border-top-left-radius: var(--r-lg); }
+.panel.machine::after  { bottom: -1px; right: -1px; border-left: none; border-top: none; border-bottom-right-radius: var(--r-lg); }
+.panel.machine > .panel-core { border-top: 2px solid color-mix(in srgb, var(--ac) 70%, transparent); }
+.panel.machine .panel-head {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--ac) 11%, transparent), transparent 70%);
+  padding-top: 11px; padding-bottom: 9px;
+}
+.panel.machine .panel-head .name { color: var(--ac); font-size: 15px; letter-spacing: 0.16em; font-weight: 700; }
+.panel.machine .panel-head .dot { box-shadow: 0 0 10px var(--ac); }
+.panel.machine .zone-body {
+  background-image: radial-gradient(color-mix(in srgb, var(--ac) 16%, transparent) 1px, transparent 1.3px);
+  background-size: 20px 20px;
+}
+
+/* ============================================================
+   CODE PANEL
+   ============================================================ */
+.code-body {
+  flex: 1; min-height: 0; overflow: auto;
+  font-family: var(--mono); font-size: 15px; line-height: 1.8;
+  padding: 10px 0 12px;
+}
+.cl {
+  display: flex; gap: 12px; padding: 0 14px;
+  position: relative; white-space: pre;
+  color: var(--text-2);
+  transition: color 0.4s var(--ease), background 0.4s var(--ease);
+}
+.cl .ln {
+  width: 28px; text-align: right; flex: none;
+  color: var(--text-3); opacity: 0.55; font-size: 12.5px;
+  user-select: none; padding-top: 1px;
+}
+.cl::before {
+  content: ""; position: absolute; left: 0; top: 2px; bottom: 2px;
+  width: 2px; border-radius: 2px; background: var(--gold);
+  opacity: 0; transform: scaleY(0.3);
+  transition: opacity 0.4s var(--ease), transform 0.4s var(--ease);
+}
+.cl.active {
+  color: var(--text);
+  background: linear-gradient(90deg, rgba(245,192,68,0.10), rgba(245,192,68,0.014) 70%, transparent);
+}
+.cl.active::before { opacity: 1; transform: scaleY(1); box-shadow: 0 0 12px rgba(245,192,68,0.8); }
+.tok-kw  { color: #C792EA; }
+.tok-str { color: #C3E88D; }
+.tok-num { color: #F78C6C; }
+.tok-fn  { color: #82AAFF; }
+.tok-obj { color: #FFCB6B; }
+.tok-arrow { color: #89DDFF; }
+.tok-cmt { color: #5C6773; font-style: italic; }
+
+/* ---------- scenario tabs ---------- */
+.sc-tabs { flex: none; display: flex; gap: 8px; padding: 0 4px; flex-wrap: wrap; }
+.sc-tab {
+  display: inline-flex; align-items: center; gap: 8px;
+  border: 1px solid var(--hairline); border-radius: 999px;
+  background: rgba(255,255,255,0.03); color: var(--text-3);
+  padding: 8px 18px; font-family: var(--sans); font-size: 14px; font-weight: 600;
+  cursor: pointer; transition: all 0.35s var(--ease);
+}
+.sc-tab .no {
+  font-family: var(--mono); font-size: 11px;
+  border: 1px solid var(--hairline-soft); border-radius: 5px;
+  padding: 0 5px; line-height: 1.5;
+}
+.sc-tab:hover { color: var(--text); border-color: rgba(255,255,255,0.22); transform: translateY(-1px); }
+.sc-tab.on { color: #0a0a0a; background: var(--gold); border-color: var(--gold); font-weight: 700; }
+.sc-tab.on .no { color: rgba(0,0,0,0.6); border-color: rgba(0,0,0,0.25); }
+
+/* ============================================================
+   CONSOLE PANEL
+   ============================================================ */
+.console-panel { flex: none; height: 240px; }
+.console-body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 12px 16px; font-family: var(--mono); font-size: 15px;
+}
+.console-body .placeholder { color: var(--text-3); font-size: 13px; padding-top: 4px; }
+.console-body:has(.log-line) .placeholder { display: none; }
+.log-line {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 4px 0; color: var(--text);
+}
+.log-line .gt { color: var(--green); opacity: 0.9; font-weight: 700; }
+.log-line .val { font-weight: 700; font-size: 18px; letter-spacing: 0.04em; }
+.log-line .src {
+  margin-left: auto; font-size: 11.5px; color: var(--text-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 58%;
+}
+.console-done {
+  margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--hairline);
+  font-size: 13px; color: var(--green); letter-spacing: 0.06em;
+  display: flex; align-items: center; gap: 7px;
+}
+.console-done::before { content: "✓"; font-weight: 700; }
+
+/* ============================================================
+   ZONES & CARDS
+   ============================================================ */
+.zone-body {
+  flex: 1; min-height: 0; position: relative;
+  padding: 12px; overflow: hidden;
+  display: flex; gap: 8px;
+}
+.zone-body.v { flex-direction: column-reverse; justify-content: flex-start; }  /* call stack: bottom-up */
+.zone-body.vt { flex-direction: column; justify-content: flex-start; }         /* runtime: top-down */
+.zone-body.h { flex-direction: row; align-items: center; padding-top: 18px; }  /* queues: FIFO (badge headroom) */
+.zone-body::after {
+  content: attr(data-empty);
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; letter-spacing: 0.14em; color: var(--text-3);
+  border: 1px dashed rgba(255,255,255,0.07); border-radius: var(--r-md);
+  margin: 12px; opacity: 1; transition: opacity 0.4s;
+  pointer-events: none;
+}
+.zone-body:has(.card)::after { opacity: 0; }
+
+/* base line under call stack */
+.stack-base {
+  flex: none; margin: 0 12px 10px; padding-top: 7px;
+  border-top: 1px solid var(--hairline);
+  font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--text-3); text-align: center;
+}
+
+.card {
+  position: relative; flex: none;
+  border-radius: var(--r-md);
+  padding: 10px 14px 10px 16px;
+  background: rgba(255,255,255,0.045);
+  border: 1px solid var(--hairline);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.06), 0 10px 24px -14px rgba(0,0,0,0.9);
+  will-change: transform;
+  min-width: 0;
+}
+.zone-body.v .card, .zone-body.vt .card { width: 100%; }
+.zone-body.h .card { max-width: 250px; }
+.card::before {
+  content: ""; position: absolute; left: 0; top: 8px; bottom: 8px;
+  width: 3px; border-radius: 3px; background: var(--kc, var(--text-3)); opacity: 0.9;
+}
+.card .c-label {
+  display: block; font-family: var(--mono); font-size: 15px; font-weight: 500;
+  color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.card .c-sub {
+  display: block; font-size: 12.5px; color: var(--text-3); margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.card .c-badge {
+  position: absolute; top: -9px; right: 9px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
+  padding: 1.5px 7px; border-radius: 999px;
+  background: #16171d; border: 1px solid var(--hairline);
+  color: var(--text-3);
+  transition: all 0.3s var(--ease);
+}
+.card[data-badge=""] .c-badge { display: none; }
+
+.card.k-ctx     { --kc: var(--text-3); }
+.card.k-sync    { --kc: var(--gold); }
+.card.k-micro   { --kc: var(--violet); background: linear-gradient(135deg, var(--violet-dim), rgba(255,255,255,0.03)); }
+.card.k-task    { --kc: var(--cyan);   background: linear-gradient(135deg, var(--cyan-dim), rgba(255,255,255,0.03)); }
+.card.k-runtime { --kc: var(--blue);   background: linear-gradient(135deg, var(--blue-dim), rgba(255,255,255,0.03)); }
+
+.card.executing {
+  border-color: rgba(245,192,68,0.55);
+  background: linear-gradient(135deg, rgba(245,192,68,0.16), rgba(245,192,68,0.04));
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.1),
+              0 0 0 1px rgba(245,192,68,0.25),
+              0 0 26px -4px rgba(245,192,68,0.4);
+  animation: execPulse 1.6s var(--ease) infinite;
+}
+.card.executing .c-badge { color: #050505; background: var(--gold); border-color: var(--gold); }
+@keyframes execPulse {
+  0%,100% { box-shadow: inset 0 1px 1px rgba(255,255,255,0.1), 0 0 0 1px rgba(245,192,68,0.25), 0 0 22px -4px rgba(245,192,68,0.35); }
+  50%     { box-shadow: inset 0 1px 1px rgba(255,255,255,0.1), 0 0 0 1px rgba(245,192,68,0.45), 0 0 34px -2px rgba(245,192,68,0.55); }
+}
+.card[data-badge="Waiting"] .c-badge { color: var(--blue); border-color: rgba(123,166,245,0.4); }
+.card[data-badge="Queued"] .c-badge  { color: var(--text-2); }
+
+/* queue front marker */
+.q-front {
+  flex: none; align-self: stretch; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 3px;
+  padding: 0 2px; font-size: 10.5px; letter-spacing: 0.16em;
+  color: var(--text-3); text-transform: uppercase; writing-mode: vertical-rl;
+  border-right: 1px dashed var(--hairline-soft); margin-right: 2px;
+  transition: opacity 0.4s;
+}
+.zone-body:not(:has(.card)) .q-front { opacity: 0.2; }
+
+/* machine column rows */
+.row-exec  { flex: 1.25; display: grid; grid-template-columns: 1.15fr 1fr; gap: 12px; min-height: 0; }
+.row-queue { flex: 1; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+.row-queue .panel { flex: 1; }
+
+/* promise strip */
+.prom-strip {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  min-height: 36px; padding: 0 4px; flex-wrap: wrap;
+}
+.prom-strip[hidden] { display: none; }
+.prom-strip .lab {
+  font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase;
+  color: var(--text-3); flex: none;
+}
+.prom-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  border: 1px solid var(--hairline); border-radius: 999px;
+  padding: 4px 11px; font-size: 12px; font-family: var(--mono);
+  color: var(--text-2); background: rgba(255,255,255,0.03);
+  white-space: nowrap;
+}
+.prom-chip .st {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 1px 7px; border-radius: 999px;
+}
+.prom-chip[data-state="pending"] .st {
+  color: var(--gold); background: var(--gold-dim);
+  animation: blink 1.6s var(--ease) infinite;
+}
+.prom-chip[data-state="fulfilled"] .st { color: var(--green); background: rgba(110,231,160,0.12); }
+
+/* ============================================================
+   EVENT LOOP PANEL
+   ============================================================ */
+.loop-body { flex: 1; min-height: 0; padding: 10px 12px; display: flex; flex-direction: column; gap: 0; overflow: auto; }
+.loop-note {
+  font-size: 13px; color: var(--text-3); padding: 0 2px 8px; line-height: 1.5;
+  transition: color 0.4s;
+}
+.loop-note.on { color: var(--gold); }
+.lp {
+  position: relative; display: flex; gap: 11px;
+  padding: 7px 10px; border-radius: var(--r-md);
+  border: 1px solid transparent;
+  transition: all 0.45s var(--ease);
+}
+.lp .n {
+  flex: none; width: 25px; height: 25px; margin-top: 1px;
+  border-radius: 50%; border: 1px solid var(--hairline);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 11.5px; color: var(--text-3);
+  background: rgba(255,255,255,0.03);
+  transition: all 0.45s var(--ease);
+}
+.lp .t { font-size: 14.5px; font-weight: 600; color: var(--text-2); transition: color 0.45s; }
+.lp .d { font-size: 12.5px; color: var(--text-3); margin-top: 2px; line-height: 1.45; }
+.lp.active {
+  border-color: rgba(245,192,68,0.35);
+  background: linear-gradient(135deg, rgba(245,192,68,0.10), transparent 70%);
+}
+.lp.active .n { background: var(--gold); border-color: var(--gold); color: #050505; font-weight: 700; box-shadow: 0 0 14px rgba(245,192,68,0.6); }
+.lp.active .t { color: var(--text); }
+.loop-arrow {
+  height: 9px; margin-left: 22px;
+  border-left: 1px dashed rgba(255,255,255,0.14);
+  flex: none;
+}
+.loop-cycle {
+  margin-top: 4px; padding: 7px 10px 0; border-top: 1px dashed var(--hairline-soft);
+  font-size: 12px; color: var(--text-3); display: flex; align-items: center; gap: 6px;
+}
+.loop-cycle b { color: var(--text-3); font-size: 12px; }
+
+/* priority mini panel */
+.prio-body { padding: 11px 14px 13px; display: flex; flex-direction: column; gap: 7px; }
+.prio-row { display: flex; align-items: baseline; gap: 10px; font-size: 13.5px; color: var(--text-2); }
+.prio-row .k {
+  font-family: var(--mono); font-size: 11px; color: var(--text-3);
+  border: 1px solid var(--hairline-soft); border-radius: 5px;
+  width: 21px; height: 21px; flex:none;
+  display: inline-flex; align-items: center; justify-content: center;
+  transform: translateY(2px);
+}
+.prio-row i { font-style: normal; color: var(--text-3); font-size: 12px; }
+
+/* ============================================================
+   DOCK — description + transport controls
+   ============================================================ */
+.dock {
+  flex: none; margin: 0 -22px;
+  padding: 12px 26px 14px;
+  border-top: 1px solid var(--hairline-soft);
+  background: rgba(6,6,8,0.72);
+  backdrop-filter: blur(22px);
+  display: flex; align-items: center; gap: 20px;
+  position: relative;
+}
+.progress {
+  position: absolute; top: -1px; left: 0; height: 1.5px;
+  background: linear-gradient(90deg, rgba(245,192,68,0.25), var(--gold));
+  box-shadow: 0 0 10px rgba(245,192,68,0.55);
+  width: 0%; transition: width 0.5s var(--ease);
+}
+.step-chip {
+  flex: none; font-family: var(--mono); font-size: 13px; letter-spacing: 0.1em;
+  color: var(--text-3); border: 1px solid var(--hairline);
+  border-radius: 999px; padding: 4px 12px; white-space: nowrap;
+}
+.step-chip b { color: var(--gold); font-weight: 700; }
+.desc-wrap { flex: 1; min-width: 0; }
+.desc {
+  font-size: 18px; color: var(--text); font-weight: 500; line-height: 1.5;
+  transition: opacity 0.25s var(--ease), transform 0.25s var(--ease);
+}
+.desc.swap { opacity: 0; transform: translateY(5px); }
+.note {
+  font-size: 14px; color: rgba(245,192,68,0.85); margin-top: 4px;
+  display: flex; align-items: baseline; gap: 6px;
+  transition: opacity 0.25s var(--ease);
+}
+.note:empty { display: none; }
+.note::before { content: "⚠"; font-size: 9px; flex: none; }
+
+.controls { flex: none; display: flex; align-items: center; gap: 8px; }
+.btn {
+  width: 36px; height: 36px; border-radius: 50%;
+  border: 1px solid var(--hairline);
+  background: rgba(255,255,255,0.04);
+  color: var(--text-2); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: all 0.35s var(--ease);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.06);
+}
+.btn:hover { color: var(--text); border-color: rgba(255,255,255,0.22); transform: translateY(-1px); }
+.btn:active { transform: scale(0.94); }
+.btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.btn.play {
+  width: 46px; height: 46px;
+  background: linear-gradient(160deg, rgba(245,192,68,0.95), rgba(210,150,30,0.95));
+  border-color: rgba(245,192,68,0.6); color: #0a0a0a;
+  box-shadow: 0 8px 26px -8px rgba(245,192,68,0.55), inset 0 1px 1px rgba(255,255,255,0.4);
+}
+.btn.play:hover { transform: translateY(-1px) scale(1.03); }
+.btn.play svg { width: 16px; height: 16px; fill: currentColor; stroke: none; }
+.speed {
+  display: flex; border: 1px solid var(--hairline); border-radius: 999px;
+  overflow: hidden; margin-left: 6px; background: rgba(255,255,255,0.03);
+}
+.speed button {
+  border: none; background: transparent; color: var(--text-3);
+  font-family: var(--mono); font-size: 12px; padding: 9px 12px; cursor: pointer;
+  transition: all 0.3s var(--ease);
+}
+.speed button.on { color: #0a0a0a; background: var(--gold); font-weight: 700; }
+.keys { flex: none; font-size: 11px; color: var(--text-3); letter-spacing: 0.08em; }
+.keys kbd {
+  font-family: var(--mono); border: 1px solid var(--hairline); border-bottom-width: 2px;
+  border-radius: 4px; padding: 1px 6px; margin: 0 1px; font-size: 10.5px;
+}
+
+/* ghost layer for exit animations */
+#ghosts { position: fixed; inset: 0; z-index: 55; pointer-events: none; }
+#ghosts .card { position: absolute; margin: 0; }
+
+/* final state */
+body.final .console-panel .panel-core { border-color: rgba(110,231,160,0.35); box-shadow: inset 0 1px 1px rgba(255,255,255,0.05), 0 0 30px -8px rgba(110,231,160,0.25); }
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 1080px) {
+  body { overflow: auto; }
+  .app { height: auto; min-height: 100dvh; padding: 16px 14px 0; }
+  .stage { grid-template-columns: 1fr; }
+  .col-code { order: 1; } .col-machine { order: 2; } .col-loop { order: 3; }
+  .code-body { max-height: 300px; }
+  .row-exec { grid-template-columns: 1fr; }
+  .zone-body.v, .zone-body.vt { min-height: 150px; }
+  .zone-body.h { min-height: 84px; }
+  header { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .priority { display: none; }
+  .dock { position: sticky; bottom: 0; margin: 0 -14px; flex-wrap: wrap; padding: 10px 16px 12px; gap: 10px; }
+  .keys { display: none; }
+  .desc { font-size: 14px; }
+  .console-panel { height: 230px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+</style>
+</head>
+<body>
+
+<canvas id="gl"></canvas>
+<div class="orbs"></div>
+<div class="grain"></div>
+<div id="ghosts"></div>
+
+<main class="app">
+  <!-- ═══════════ HEADER ═══════════ -->
+  <header>
+    <div>
+      <h1>단일 스레드는 어떻게 <em>비동기</em>를 처리하는가</h1>
+      <p class="sub">코드 하나가 Call Stack · Runtime API · Queue · Event Loop 사이를 이동하는 전 과정</p>
+    </div>
+    <div class="priority">
+      <b>실행 우선순위</b><span class="sep">│</span>
+      동기 코드 <span class="sep">→</span> Microtask <b>전체</b> <span class="sep">→</span> Render <span class="sep">→</span> Task <b>하나</b> <span class="sep">↺</span>
+    </div>
+  </header>
+
+  <!-- ═══════════ SCENARIO TABS ═══════════ -->
+  <nav class="sc-tabs" id="sc-tabs" aria-label="시나리오 선택"></nav>
+
+  <!-- ═══════════ STAGE ═══════════ -->
+  <section class="stage">
+
+    <!-- ── LEFT: code + console ── -->
+    <div class="col col-code">
+      <div class="panel" style="flex:1">
+        <div class="panel-core">
+          <div class="panel-head">
+            <span class="dot" style="background:var(--gold)"></span>
+            <span class="name">Source Code</span>
+            <span class="hint">현재 실행 라인</span>
+          </div>
+          <div class="code-body" id="code"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-core">
+          <div class="panel-head">
+            <span class="dot" style="background:var(--text-3)"></span>
+            <span class="name">핵심 규칙</span>
+          </div>
+          <div class="prio-body">
+            <div class="prio-row"><span class="k">1</span><span>코드는 Call Stack에서 <b>하나씩</b> 실행 <i>— 단일 스레드</i></span></div>
+            <div class="prio-row"><span class="k">2</span><span>대기 작업은 <b>Runtime API에 위임</b> <i>— 병렬 실행 아님</i></span></div>
+            <div class="prio-row"><span class="k">3</span><span>완료된 작업은 <b>큐를 거쳐</b> 다시 실행</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── CENTER: machine ── -->
+    <div class="col col-machine">
+      <div class="row-exec">
+        <div class="panel machine" style="--ac:var(--gold)">
+          <div class="panel-core">
+            <div class="panel-head">
+              <span class="dot" style="background:var(--gold)"></span>
+              <span class="name">Call Stack</span>
+              <span class="count" id="cnt-stack">0</span>
+            </div>
+            <div class="zone-body v" id="z-stack" data-empty="EMPTY — 실행할 코드 없음"></div>
+            <div class="stack-base">JavaScript 엔진 · 한 번에 하나씩 실행</div>
+          </div>
+        </div>
+        <div class="panel machine" style="--ac:var(--blue)">
+          <div class="panel-core">
+            <div class="panel-head">
+              <span class="dot" style="background:var(--blue)"></span>
+              <span class="name">Runtime APIs</span>
+              <span class="hint">Timer · Network · DOM Event</span>
+            </div>
+            <div class="zone-body vt" id="z-runtime" data-empty="위임된 작업 없음"></div>
+            <div class="stack-base">브라우저 / Node.js 실행 환경</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="prom-strip" id="proms" hidden>
+        <span class="lab">Promises</span>
+      </div>
+
+      <div class="row-queue">
+        <div class="panel machine" style="--ac:var(--violet)">
+          <div class="panel-core">
+            <div class="panel-head">
+              <span class="dot" style="background:var(--violet)"></span>
+              <span class="name">Microtask Queue</span>
+              <span class="hint">.then / await 이후 · 먼저, 전부 처리</span>
+              <span class="count" id="cnt-micro">0</span>
+            </div>
+            <div class="zone-body h" id="z-micro" data-empty="EMPTY">
+              <span class="q-front">Next →</span>
+            </div>
+          </div>
+        </div>
+        <div class="panel machine" style="--ac:var(--cyan)">
+          <div class="panel-core">
+            <div class="panel-head">
+              <span class="dot" style="background:var(--cyan)"></span>
+              <span class="name">Task Queue</span>
+              <span class="hint">setTimeout · Event — Macro Task라고도 부름</span>
+              <span class="count" id="cnt-task">0</span>
+            </div>
+            <div class="zone-body h" id="z-task" data-empty="EMPTY">
+              <span class="q-front">Next →</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── RIGHT: event loop ── -->
+    <div class="col col-loop">
+      <div class="panel machine" style="flex:1; --ac:var(--gold)">
+        <div class="panel-core">
+          <div class="panel-head">
+            <span class="dot" style="background:var(--gold)"></span>
+            <span class="name">Event Loop</span>
+            <span class="hint">순서 조정자</span>
+          </div>
+          <div class="loop-body">
+            <p class="loop-note" id="loop-note">동기 코드 실행 중에는 대기합니다. 코드를 실행하는 것은 Event Loop가 아니라 Call Stack입니다.</p>
+            <div class="lp" data-phase="stack">
+              <span class="n">1</span>
+              <div><div class="t">Call Stack 확인</div><div class="d">비어 있는가?</div></div>
+            </div>
+            <div class="loop-arrow"></div>
+            <div class="lp" data-phase="micro">
+              <span class="n">2</span>
+              <div><div class="t">Microtask Queue 처리</div><div class="d">빌 때까지 전부 Call Stack으로 이동</div></div>
+            </div>
+            <div class="loop-arrow"></div>
+            <div class="lp" data-phase="render">
+              <span class="n">3</span>
+              <div><div class="t">Render 기회</div><div class="d">브라우저 화면 갱신 (큐 작업 아님)</div></div>
+            </div>
+            <div class="loop-arrow"></div>
+            <div class="lp" data-phase="task">
+              <span class="n">4</span>
+              <div><div class="t">Task Queue 확인</div><div class="d">한 사이클에 하나만 이동</div></div>
+            </div>
+            <div class="loop-cycle"><b>↺</b> 다시 ①로 — 이 확인 루프의 반복이 Event Loop</div>
+          </div>
+        </div>
+      </div>
+      <div class="panel machine console-panel" style="--ac:var(--green)">
+        <div class="panel-core">
+          <div class="panel-head">
+            <span class="dot" style="background:var(--green)"></span>
+            <span class="name">Console</span>
+            <span class="hint">출력 순서</span>
+          </div>
+          <div class="console-body" id="console">
+            <div class="placeholder">출력 대기 중…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ DOCK ═══════════ -->
+  <footer class="dock">
+    <div class="progress" id="progress"></div>
+    <span class="step-chip">STEP <b id="step-cur">01</b> / <span id="step-total">00</span></span>
+    <div class="desc-wrap">
+      <p class="desc" id="desc"></p>
+      <p class="note" id="note"></p>
+    </div>
+    <div class="controls">
+      <button class="btn" id="btn-restart" title="처음부터 (R)">
+        <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/></svg>
+      </button>
+      <button class="btn" id="btn-prev" title="이전 단계 (←)">
+        <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>
+      </button>
+      <button class="btn play" id="btn-play" title="재생 / 일시정지 (Space)">
+        <svg viewBox="0 0 24 24" id="ic-play"><path d="M8 5.5v13l11-6.5z"/></svg>
+        <svg viewBox="0 0 24 24" id="ic-pause" style="display:none"><path d="M7 5h3.4v14H7zM13.6 5H17v14h-3.4z"/></svg>
+      </button>
+      <button class="btn" id="btn-next" title="다음 단계 (→)">
+        <svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+      <div class="speed" id="speed"></div>
+    </div>
+    <span class="keys"><kbd>Space</kbd> 재생 <kbd>←</kbd><kbd>→</kbd> 단계 <kbd>R</kbd> 처음</span>
+  </footer>
+</main>
+
+<script>
+"use strict";
+/* ════════════════════════════════════════════════════════════
+   0. SHARED
+   ════════════════════════════════════════════════════════════ */
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const EASE = "cubic-bezier(0.32, 0.72, 0, 1)";
+let SPEED = 1;
+const D = base => REDUCED ? 1 : base / SPEED;
+
+/* ════════════════════════════════════════════════════════════
+   1. WEBGL BACKGROUND — perspective grid + particle haze
+      (raw WebGL, no dependencies; pulses react to the simulation)
+   ════════════════════════════════════════════════════════════ */
+const GL = (() => {
+  const canvas = document.getElementById("gl");
+  const gl = canvas.getContext("webgl", { antialias: false, alpha: false, powerPreference: "low-power" });
+  if (!gl) { canvas.remove(); return { pulse(){}, setHue(){} }; }
+
+  const VS = "attribute vec2 p; void main(){ gl_Position = vec4(p, 0.0, 1.0); }";
+  const FS = `
+precision highp float;
+uniform vec2  uRes;
+uniform float uTime;
+uniform vec2  uMouse;
+uniform float uPulse;
+uniform vec3  uPulseCol;
+
+float h21(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+
+void main(){
+  vec2 uv = (gl_FragCoord.xy * 2.0 - uRes) / uRes.y;
+  vec3 col = vec3(0.011, 0.012, 0.018);
+
+  // elevated camera, gentle mouse parallax, looking toward horizon
+  vec3 ro = vec3(uMouse.x * 0.55, 1.28 + uMouse.y * 0.18, 0.0);
+  vec3 rd = normalize(vec3(uv.x, uv.y - 0.24, -1.5));
+
+  // ground plane grid (y = 0), slow forward drift
+  if (rd.y < -0.012) {
+    float t = -ro.y / rd.y;
+    vec3  hp = ro + rd * t;
+    vec2  g  = vec2(hp.x, hp.z + uTime * 0.55);
+
+    vec2 c1 = abs(fract(g) - 0.5);
+    float d1 = min(c1.x, c1.y);
+    vec2 c5 = abs(fract(g / 5.0) - 0.5) * 5.0;
+    float d5 = min(c5.x, c5.y);
+
+    float s  = 0.016 + t * 0.011;              // line softness grows with distance
+    float l1 = exp(-(d1 * d1) / (2.0 * s * s));
+    float l5 = exp(-(d5 * d5) / (2.0 * s * s * 3.2));
+    float fade = exp(-t * 0.105);
+
+    vec3 base   = vec3(0.40, 0.46, 0.62);
+    vec3 accent = mix(vec3(0.96, 0.75, 0.30), uPulseCol, uPulse * 0.65);
+    col += base   * l1 * fade * 0.16 * (1.0 + uPulse * 0.9);
+    col += accent * l5 * fade * 0.22 * (1.0 + uPulse * 1.6);
+  }
+
+  // horizon glow
+  float hor = exp(-abs(uv.y + 0.245) * 9.0);
+  col += mix(vec3(0.55, 0.48, 0.30), uPulseCol, uPulse * 0.5) * hor * (0.045 + uPulse * 0.10);
+
+  // sparse floating dust, three parallax layers
+  for (int i = 0; i < 3; i++) {
+    float fi = float(i);
+    vec2 q  = uv * (2.2 + fi * 1.6) + vec2(uTime * 0.016 * (fi + 1.0), uTime * 0.011 * (fi + 0.6));
+    vec2 id = floor(q);
+    vec2 f  = fract(q) - 0.5;
+    float rn = h21(id + fi * 7.31);
+    vec2 off = (vec2(h21(id + 1.7), h21(id + 9.1)) - 0.5) * 0.72;
+    float dd = length(f - off);
+    float tw = 0.5 + 0.5 * sin(uTime * (0.5 + rn * 1.3) + rn * 6.28);
+    col += vec3(0.68, 0.72, 0.9) * exp(-dd * dd * 1100.0) * 0.055 * tw * step(0.78, rn);
+  }
+
+  // vignette + dither
+  col *= 1.0 - 0.5 * dot(uv * vec2(0.62, 0.85), uv * vec2(0.62, 0.85));
+  col += (h21(gl_FragCoord.xy + fract(uTime)) - 0.5) * 0.007;
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+  function shader(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s));
+    return s;
+  }
+  const prog = gl.createProgram();
+  gl.attachShader(prog, shader(gl.VERTEX_SHADER, VS));
+  gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog); gl.useProgram(prog);
+
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, "p");
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+  const U = n => gl.getUniformLocation(prog, n);
+  const uRes = U("uRes"), uTime = U("uTime"), uMouse = U("uMouse"),
+        uPulse = U("uPulse"), uPulseCol = U("uPulseCol");
+
+  function resize() {
+    const dpr = Math.min(devicePixelRatio || 1, 1.75);
+    canvas.width  = innerWidth  * dpr;
+    canvas.height = innerHeight * dpr;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
+  addEventListener("resize", resize); resize();
+
+  let mx = 0, my = 0, smx = 0, smy = 0;
+  addEventListener("pointermove", e => {
+    mx = (e.clientX / innerWidth)  * 2 - 1;
+    my = (e.clientY / innerHeight) * 2 - 1;
+  });
+
+  let pulse = 0, pcol = [0.96, 0.75, 0.30], t0 = performance.now();
+  function frame(now) {
+    const t = (now - t0) / 1000;
+    smx += (mx - smx) * 0.035;
+    smy += (my - smy) * 0.035;
+    pulse *= 0.955;
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+    gl.uniform1f(uTime, REDUCED ? 0 : t);
+    gl.uniform2f(uMouse, REDUCED ? 0 : smx, REDUCED ? 0 : -smy);
+    gl.uniform1f(uPulse, pulse);
+    gl.uniform3f(uPulseCol, pcol[0], pcol[1], pcol[2]);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  return {
+    pulse(v, col) { pulse = Math.min(1, pulse + v); if (col) pcol = col; },
+  };
+})();
+
+const PULSE = {
+  gold:   [0.96, 0.75, 0.30],
+  violet: [0.66, 0.55, 0.98],
+  cyan:   [0.37, 0.86, 0.83],
+  green:  [0.43, 0.90, 0.63],
+};
+
+/* ════════════════════════════════════════════════════════════
+   2. SCENARIO DATA
+   ════════════════════════════════════════════════════════════ */
+const CODE = [
+  'console.log("1");',
+  '',
+  'setTimeout(() => {',
+  '  console.log("2");',
+  '}, 0);',
+  '',
+  'async function run() {',
+  '  console.log("3");',
+  '  await Promise.resolve();',
+  '  console.log("4");',
+  '}',
+  '',
+  'run();',
+  '',
+  'Promise.resolve().then(() => {',
+  '  console.log("5");',
+  '});',
+  '',
+  'console.log("6");',
+];
+
+/* moving entities — a card keeps its identity across zones (FLIP) */
+const CARDS = {
+  G:    { label: "Global Context",        sub: "전역 실행 컨텍스트",              kind: "ctx"     },
+  L1:   { label: 'console.log("1")',      sub: "",                                kind: "sync"    },
+  ST:   { label: "setTimeout(cb, 0)",     sub: "타이머를 Runtime에 위임",          kind: "sync"    },
+  RT:   { label: "Timer · 0ms",           sub: "setTimeout callback 대기",         kind: "runtime" },
+  RUN:  { label: "run()",                 sub: "async function — Promise 반환",    kind: "sync"    },
+  L3:   { label: 'console.log("3")',      sub: "",                                kind: "sync"    },
+  THEN: { label: ".then(callback)",       sub: "콜백을 Microtask로 예약",          kind: "sync"    },
+  L6:   { label: 'console.log("6")',      sub: "",                                kind: "sync"    },
+  M1:   { label: "run() continuation",    sub: 'await 이후 — console.log("4")',    kind: "micro"   },
+  M2:   { label: "Promise.then callback", sub: 'console.log("5")',                 kind: "micro"   },
+  L4:   { label: 'console.log("4")',      sub: "",                                kind: "sync"    },
+  L5:   { label: 'console.log("5")',      sub: "",                                kind: "sync"    },
+  T1:   { label: "setTimeout callback",   sub: 'console.log("2")',                 kind: "task"    },
+  L2:   { label: 'console.log("2")',      sub: "",                                kind: "sync"    },
+};
+
+const PROMS = {
+  PA: "Promise.resolve() ·L9",
+  PR: "run() 반환 Promise",
+  PB: "Promise.resolve() ·L15",
+};
+
+/* step builder — each step inherits the previous full state */
+function makeSteps(build) {
+  const steps = [];
+  let c = { line: null, desc: "", note: null, stack: [], runtime: [], micro: [], task: [], log: [], loop: "idle", proms: {}, hold: 1, final: false };
+  build(p => { c = Object.assign({}, c, { note: null }, p); steps.push(c); });
+  return steps;
+}
+
+const MAIN_STEPS = makeSteps(step => {
+
+step({ line: null, stack: ["G"],
+  desc: "스크립트 시작 — Global Context가 Call Stack에 들어갑니다. JavaScript 코드는 이 스택에서 한 번에 하나씩 실행됩니다." });
+
+step({ line: 0, stack: ["G", "L1"],
+  desc: 'console.log("1")이 호출되어 Call Stack 위에 쌓입니다. 스택 최상단의 함수 하나만 실행 상태가 됩니다.' });
+
+step({ line: 0, stack: ["G"], log: ["1"],
+  desc: '"1" 출력 — 실행이 끝난 함수는 스택 위쪽부터 제거됩니다.' });
+
+step({ line: 2, stack: ["G", "ST"],
+  desc: "setTimeout()이 호출됩니다. 시간을 재는 것은 JavaScript 엔진의 일이 아닙니다." });
+
+step({ line: 2, stack: ["G"], runtime: ["RT"],
+  desc: "타이머(0ms)가 Runtime API에 위임되고 setTimeout()은 즉시 반환됩니다. 메인 스레드는 기다리지 않고 다음 코드를 실행합니다.",
+  note: "JavaScript가 모든 일을 동시에 하는 것이 아니라, 대기 작업을 실행 환경에 맡기는 것입니다." });
+
+step({ line: 2, runtime: [], task: ["T1"],
+  desc: "타이머 완료 — 하지만 콜백은 바로 실행되지 않습니다. Task Queue에 등록되어 Call Stack이 빌 때까지 대기합니다.",
+  note: "흔한 오해: setTimeout(…, 0)은 즉시 실행된다 → 아니요, 항상 큐를 거칩니다." });
+
+step({ line: 6, hold: 0.7,
+  desc: "async function run 정의 — 함수 정의는 실행이 아닙니다. async 함수는 호출되면 항상 Promise를 반환합니다." });
+
+step({ line: 12, stack: ["G", "RUN"],
+  desc: "run() 호출 — async 함수도 첫 await를 만나기 전까지는 일반 함수처럼 같은 Call Stack에서 동기적으로 실행됩니다.",
+  note: "흔한 오해: async 함수는 별도 스레드에서 병렬 실행된다 → 아니요." });
+
+step({ line: 7, stack: ["G", "RUN", "L3"],
+  desc: 'console.log("3")이 스택에 쌓여 실행됩니다.' });
+
+step({ line: 7, stack: ["G", "RUN"], log: ["1", "3"],
+  desc: '"3" 출력 — 여기까지 run() 내부도 Call Stack 위의 동기 실행입니다.' });
+
+step({ line: 8, proms: { PA: "fulfilled" },
+  desc: "await Promise.resolve() — executor가 동기적으로 실행되어 Promise는 즉시 fulfilled가 됩니다. 그러나 await 뒤의 코드는 바로 이어지지 않습니다." });
+
+step({ line: 8, stack: ["G"], micro: ["M1"], proms: { PA: "fulfilled", PR: "pending" },
+  desc: "await 지점에서 run()의 실행이 중단되고 Call Stack에서 제거됩니다. 이후 코드는 continuation으로 Microtask Queue에 등록되고, run()은 pending 상태의 Promise를 반환합니다.",
+  note: "await은 JavaScript 전체를 멈추지 않습니다 — 현재 async 함수의 후속 실행만 중단합니다." });
+
+step({ line: 14, stack: ["G", "THEN"], proms: { PA: "fulfilled", PR: "pending", PB: "fulfilled" },
+  desc: "Promise.resolve().then(…) — 이미 fulfilled 상태의 Promise이므로 .then() 콜백은 곧바로 Microtask Queue행이 예약됩니다." });
+
+step({ line: 14, stack: ["G"], micro: ["M1", "M2"],
+  desc: "Microtask Queue: ① run() continuation ② Promise.then callback — 먼저 등록된 continuation이 앞에 섭니다. \"4\"가 \"5\"보다 먼저 출력되는 이유입니다." });
+
+step({ line: 18, stack: ["G", "L6"],
+  desc: '마지막 동기 코드 console.log("6")이 실행됩니다. 큐에 3개의 작업이 기다리고 있어도 순서는 바뀌지 않습니다.' });
+
+step({ line: 18, stack: ["G"], log: ["1", "3", "6"],
+  desc: '"6" 출력 — 동기 코드는 큐에서 기다리는 어떤 작업보다 먼저 끝까지 실행됩니다.' });
+
+step({ line: null, stack: [], loop: "stack",
+  desc: "전역 코드 종료 — Global Context가 제거되고 Call Stack이 완전히 비었습니다. 이제 Event Loop가 움직일 차례입니다." });
+
+step({ loop: "micro",
+  desc: "Event Loop: Call Stack이 빈 것을 확인하고, Task Queue가 아닌 Microtask Queue를 먼저 확인합니다.",
+  note: "Microtask Queue는 Task Queue보다 항상 먼저, 그리고 빌 때까지 전부 처리됩니다." });
+
+step({ line: 9, loop: "micro", stack: ["M1"], micro: ["M2"],
+  desc: "Event Loop가 run() continuation을 Call Stack으로 이동시킵니다. 실행은 Event Loop가 아니라 Call Stack 위의 JavaScript 엔진이 합니다.",
+  note: "흔한 오해: Event Loop가 콜백을 실행한다 → 아니요, 실행 가능한 콜백을 옮길 뿐입니다." });
+
+step({ line: 9, loop: "idle", stack: ["M1", "L4"],
+  desc: '중단됐던 지점부터 재개 — console.log("4")가 실행됩니다.' });
+
+step({ line: 9, stack: [], log: ["1", "3", "6", "4"], proms: { PA: "fulfilled", PR: "fulfilled", PB: "fulfilled" },
+  desc: '"4" 출력 — continuation이 끝나며 run()이 반환했던 Promise도 fulfilled가 됩니다. 스택이 다시 비었습니다.' });
+
+step({ line: 15, loop: "micro", stack: ["M2"], micro: [],
+  desc: "Microtask Queue는 하나만 처리하고 멈추지 않습니다 — 큐가 빌 때까지 계속. 다음은 Promise.then callback입니다." });
+
+step({ line: 15, loop: "idle", stack: [], log: ["1", "3", "6", "4", "5"],
+  desc: '"5" 출력 — Microtask Queue가 완전히 비워졌습니다.' });
+
+step({ line: null, loop: "render", hold: 1.2,
+  desc: "Render — Microtask가 모두 끝난 이 시점이 브라우저가 화면을 갱신할 수 있는 기회입니다. 렌더링은 큐에 들어가는 작업이 아니라 별도의 단계입니다.",
+  note: "Microtask가 무한히 추가되면 이 Render 기회와 Task 처리가 함께 밀립니다." });
+
+step({ line: 3, loop: "task", stack: ["T1"], task: [],
+  desc: "Event Loop가 Task Queue를 확인하고 setTimeout callback을 Call Stack으로 이동시킵니다. 한 사이클에 Task는 하나씩만 처리됩니다." });
+
+step({ line: 3, loop: "idle", stack: [], log: ["1", "3", "6", "4", "5", "2"],
+  desc: '"2" 출력 — 0ms 타이머였지만 모든 동기 코드와 Microtask가 끝난 뒤에야 실행되었습니다.' });
+
+step({ line: null, loop: "idle", final: true, hold: 2,
+  desc: "JavaScript는 단일 스레드에서 코드를 하나씩 실행하지만, 비동기 작업을 실행 환경에 위임하고 Promise · Microtask Queue · Task Queue · Event Loop를 통해 완료된 작업의 실행 순서를 관리합니다.",
+  note: "비동기의 핵심은 동시 실행이 아니라, 작업 위임과 실행 순서 관리입니다." });
+
+}); /* end MAIN_STEPS */
+
+/* ─────────────────────────────────────────────────────────────
+   보조 시나리오 A — 동기 블로킹
+   ───────────────────────────────────────────────────────────── */
+const BLOCK = {
+  id: "block",
+  name: "동기 블로킹",
+  code: [
+    'console.log("start");',
+    '',
+    'setTimeout(() => {',
+    '  console.log("timer");',
+    '}, 100);',
+    '',
+    'const t0 = Date.now();',
+    'while (Date.now() - t0 < 3000) {',
+    '  // 3초 동안 CPU 점유',
+    '}',
+    '',
+    'console.log("end");',
+  ],
+  cards: {
+    G2:  { label: "Global Context",       sub: "전역 실행 컨텍스트",           kind: "ctx"     },
+    LS:  { label: 'console.log("start")', sub: "",                             kind: "sync"    },
+    ST2: { label: "setTimeout(cb, 100)",  sub: "타이머를 Runtime에 위임",       kind: "sync"    },
+    RT2: { label: "Timer · 100ms",        sub: "setTimeout callback 대기",      kind: "runtime" },
+    W:   { label: "while 루프",           sub: "동기 블로킹 · 3초 점유",        kind: "sync"    },
+    TC:  { label: "setTimeout callback",  sub: 'console.log("timer")',          kind: "task"    },
+    LE:  { label: 'console.log("end")',   sub: "",                             kind: "sync"    },
+  },
+  proms: {},
+  logMeta: { "start": "L1 · 동기", "end": "L12 · 동기", "timer": "L4 · task — 3초+ 지연" },
+  doneText: "start → end → timer — 100ms 타이머가 3초+ 지연됨",
+  steps: makeSteps(step => {
+    step({ line: null, stack: ["G2"],
+      desc: "이번 시나리오: 긴 동기 작업이 Call Stack을 점유하면 무슨 일이 생기는가." });
+    step({ line: 0, stack: ["G2", "LS"], hold: 0.7,
+      desc: 'console.log("start") 실행.' });
+    step({ line: 0, stack: ["G2"], log: ["start"], hold: 0.7,
+      desc: '"start" 출력.' });
+    step({ line: 2, stack: ["G2", "ST2"], hold: 0.8,
+      desc: "setTimeout(…, 100) — 타이머를 Runtime API에 위임합니다." });
+    step({ line: 2, stack: ["G2"], runtime: ["RT2"],
+      desc: "타이머(100ms)가 Runtime에서 흐르기 시작하고, 메인 스레드는 다음 코드로 진행합니다." });
+    step({ line: 7, stack: ["G2", "W"],
+      desc: "while 루프 시작 — 3초 동안 CPU를 점유하는 동기 코드가 Call Stack 최상단을 차지합니다." });
+    step({ line: 7, runtime: [], task: ["TC"], loop: "stack",
+      desc: "100ms 뒤 타이머 완료 — 콜백이 Task Queue에 등록됩니다. 하지만 Event Loop가 Call Stack을 확인하니 비어 있지 않습니다.",
+      note: "Event Loop는 Call Stack이 빌 때까지 큐의 작업을 옮기지 못합니다." });
+    step({ line: 8, loop: "stack", hold: 1.2,
+      desc: "루프는 여전히 실행 중 — 이 동안 클릭 이벤트, 다른 타이머, 화면 렌더링까지 전부 멈춰 있습니다.",
+      note: '페이지가 "얼어붙은" 것처럼 보이는 전형적인 원인입니다.' });
+    step({ line: 11, stack: ["G2", "LE"], loop: "idle",
+      desc: '3초 경과, 루프 종료 — 그제서야 다음 코드 console.log("end")가 실행됩니다.' });
+    step({ line: 11, stack: ["G2"], log: ["start", "end"],
+      desc: '"end" 출력 — Task Queue에서 기다리던 콜백보다 동기 코드가 먼저입니다.' });
+    step({ line: null, stack: [], loop: "micro",
+      desc: "전역 코드 종료, Call Stack이 비었습니다. Microtask 없음 → Task Queue 차례." });
+    step({ line: 3, loop: "task", stack: ["TC"], task: [],
+      desc: "100ms짜리 타이머 콜백이 3초가 지나서야 Call Stack으로 이동합니다." });
+    step({ line: 3, loop: "idle", stack: [], log: ["start", "end", "timer"],
+      desc: '"timer" 출력 — setTimeout의 지연 시간은 "최소" 대기 시간일 뿐, 실행 시점을 보장하지 않습니다.' });
+    step({ line: null, final: true, hold: 2,
+      desc: "단일 스레드에서는 긴 동기 작업 하나가 이벤트·타이머·렌더링 전체를 막습니다. 무거운 계산은 쪼개거나 Web Worker로 위임하세요.",
+      note: "핵심: 긴 동기 작업 = 모든 이벤트 처리의 정지." });
+  }),
+};
+
+/* ─────────────────────────────────────────────────────────────
+   보조 시나리오 B — 직렬 await vs Promise.all
+   ───────────────────────────────────────────────────────────── */
+const SERIAL = {
+  id: "serial",
+  name: "직렬 await vs Promise.all",
+  code: [
+    '// ① 직렬 — 대기 시간이 더해진다',
+    'const user  = await getUser();   // 약 1초',
+    'const posts = await getPosts();  // 약 1초',
+    '',
+    '// ② 동시 시작 — 대기 시간이 겹친다',
+    'const [u, p] = await Promise.all([',
+    '  getUser(),',
+    '  getPosts(),',
+    ']);',
+    '',
+    '// 직렬 ≈ 2초, Promise.all ≈ 1초',
+  ],
+  cards: {
+    G3:   { label: "Module Context",       sub: "최상위 await 컨텍스트",         kind: "ctx"     },
+    FU:   { label: "getUser()",            sub: "GET /user 요청 시작",           kind: "sync"    },
+    NU:   { label: "Network · getUser",    sub: "GET /user · 약 1초",            kind: "runtime" },
+    CU:   { label: "continuation ①",       sub: "user = 응답값",                 kind: "micro"   },
+    FP:   { label: "getPosts()",           sub: "GET /posts 요청 시작",          kind: "sync"    },
+    NP:   { label: "Network · getPosts",   sub: "GET /posts · 약 1초",           kind: "runtime" },
+    CP:   { label: "continuation ②",       sub: "posts = 응답값",                kind: "micro"   },
+    PALL: { label: "Promise.all([…])",     sub: "두 요청을 즉시 연달아 시작",     kind: "sync"    },
+    NU2:  { label: "Network · getUser",    sub: "동시 대기 중 · 약 1초",         kind: "runtime" },
+    NP2:  { label: "Network · getPosts",   sub: "동시 대기 중 · 약 1초",         kind: "runtime" },
+    CALL: { label: "all continuation",     sub: "[u, p] = 두 결과",              kind: "micro"   },
+  },
+  proms: { PU: "getUser() Promise", PP: "getPosts() Promise", PL: "Promise.all" },
+  logMeta: { "user ← 1.0s": "직렬 ①", "posts ← 2.0s": "직렬 ② (누적)", "[u, p] ← 1.0s": "Promise.all (동시 대기)" },
+  doneText: "직렬 ≈ 2초 · Promise.all ≈ 1초",
+  steps: makeSteps(step => {
+    step({ line: null, stack: ["G3"],
+      desc: "같은 두 네트워크 요청을 ① 직렬 await ② Promise.all로 처리할 때의 시간 차이를 봅니다." });
+    step({ line: 1, stack: ["G3", "FU"], proms: { PU: "pending" },
+      desc: "getUser() 호출 — 요청을 Runtime API에 위임하고 pending Promise를 반환합니다." });
+    step({ line: 1, stack: [], runtime: ["NU"],
+      desc: "await — 이 실행 흐름이 중단되고 스택에서 빠집니다. getPosts()는 아직 시작도 하지 않았습니다.",
+      note: "독립적인 두 요청인데 뒤 요청이 앞 요청의 완료를 기다립니다." });
+    step({ line: 1, runtime: [], micro: ["CU"], proms: { PU: "fulfilled" },
+      desc: "약 1초 후 응답 — Promise fulfilled, continuation이 Microtask Queue에 등록됩니다." });
+    step({ line: 1, stack: ["CU"], micro: [], loop: "micro", log: ["user ← 1.0s"],
+      desc: "Event Loop가 continuation을 Call Stack으로 — user에 결과가 할당됩니다." });
+    step({ line: 2, stack: ["CU", "FP"], loop: "idle", proms: { PU: "fulfilled", PP: "pending" },
+      desc: "재개된 코드가 이어서 getPosts() 호출 — 두 번째 요청이 이제서야 시작됩니다." });
+    step({ line: 2, stack: [], runtime: ["NP"], hold: 1.1,
+      desc: "다시 await — 또 약 1초 대기. 첫 요청과 대기가 전혀 겹치지 않았습니다." });
+    step({ line: 2, runtime: [], micro: ["CP"], proms: { PU: "fulfilled", PP: "fulfilled" },
+      desc: "응답 도착 — continuation ② 등록." });
+    step({ line: 2, stack: ["CP"], micro: [], loop: "micro", log: ["user ← 1.0s", "posts ← 2.0s"],
+      desc: "posts 할당 — ① 직렬 방식 완료: 총 약 2초." });
+    step({ line: 5, stack: ["G3", "PALL"], loop: "idle", proms: { PL: "pending" },
+      desc: "② Promise.all — 배열 안의 getUser(), getPosts()가 연달아 즉시 호출됩니다. (비교를 위해 새로 시작)" });
+    step({ line: 5, stack: [], runtime: ["NU2", "NP2"],
+      desc: "두 요청이 Runtime API에서 함께 대기 — 코드가 병렬로 실행되는 것이 아니라 대기 시간이 겹치는 것입니다.",
+      note: "비동기 ≠ 멀티스레드. JavaScript 실행은 여전히 한 번에 하나입니다." });
+    step({ line: 5, runtime: [], micro: ["CALL"], proms: { PL: "fulfilled" },
+      desc: "약 1초 후 둘 다 완료 — Promise.all이 fulfilled 되고 continuation이 등록됩니다." });
+    step({ line: 5, stack: ["CALL"], micro: [], loop: "micro", log: ["user ← 1.0s", "posts ← 2.0s", "[u, p] ← 1.0s"],
+      desc: "[u, p] 할당 — ② 방식 총 소요: 약 1초." });
+    step({ line: 10, stack: [], loop: "idle", final: true, hold: 2,
+      desc: "앞 결과가 다음 요청에 필요할 때만 직렬 await을 쓰세요. 독립적인 작업은 Promise.all로 시작해 대기를 겹치면 전체 시간이 가장 긴 작업만큼으로 줄어듭니다.",
+      note: "직렬 = 1초 + 1초 / Promise.all = max(1초, 1초)" });
+  }),
+};
+
+/* ─────────────────────────────────────────────────────────────
+   보조 시나리오 C — forEach + async 함정
+   ───────────────────────────────────────────────────────────── */
+const FOREACH = {
+  id: "foreach",
+  name: "forEach + async 함정",
+  code: [
+    'const items = ["a", "b"];',
+    '',
+    'items.forEach(async (item) => {',
+    '  await saveItem(item);',
+    '  console.log("saved", item);',
+    '});',
+    '',
+    'console.log("done");',
+    '',
+    '// 해결: await Promise.all(',
+    '//   items.map(item => saveItem(item)));',
+  ],
+  cards: {
+    G4: { label: "Global Context",       sub: "전역 실행 컨텍스트",             kind: "ctx"     },
+    FE: { label: "items.forEach(cb)",    sub: "각 요소마다 async 콜백 호출",     kind: "sync"    },
+    A1: { label: 'async cb("a")',        sub: "await에서 즉시 중단",             kind: "sync"    },
+    A2: { label: 'async cb("b")',        sub: "await에서 즉시 중단",             kind: "sync"    },
+    S1: { label: 'saveItem("a")',        sub: "저장 요청 · 대기 중",             kind: "runtime" },
+    S2: { label: 'saveItem("b")',        sub: "저장 요청 · 대기 중",             kind: "runtime" },
+    C1: { label: 'continuation "a"',     sub: 'console.log("saved", "a")',       kind: "micro"   },
+    C2: { label: 'continuation "b"',     sub: 'console.log("saved", "b")',       kind: "micro"   },
+    LD: { label: 'console.log("done")',  sub: "",                               kind: "sync"    },
+  },
+  proms: { Q1: 'cb("a") 반환 Promise', Q2: 'cb("b") 반환 Promise' },
+  logMeta: { "done": "L8 · 동기", "saved a": "L5 · microtask", "saved b": "L5 · microtask" },
+  doneText: 'done → saved a → saved b — "done"이 먼저!',
+  steps: makeSteps(step => {
+    step({ line: null, stack: ["G4"],
+      desc: 'forEach에 async 콜백을 넘기면 왜 "done"이 먼저 찍히는지 봅니다.' });
+    step({ line: 2, stack: ["G4", "FE"],
+      desc: "items.forEach 시작 — 각 요소마다 async 콜백을 호출합니다." });
+    step({ line: 3, stack: ["G4", "FE", "A1"], runtime: ["S1"], proms: { Q1: "pending" },
+      desc: 'cb("a") 실행 — saveItem("a")를 위임하고 await에서 즉시 중단, pending Promise를 반환합니다.' });
+    step({ line: 3, stack: ["G4", "FE", "A2"], runtime: ["S1", "S2"], proms: { Q1: "pending", Q2: "pending" },
+      desc: '그런데 forEach는 그 Promise를 기다리지 않고 곧장 cb("b") 호출 — 역시 await에서 중단됩니다.',
+      note: "forEach는 콜백의 반환값(Promise)을 완전히 무시합니다." });
+    step({ line: 5, stack: ["G4"],
+      desc: "forEach 종료 — 저장 작업 2개는 아직 Runtime에서 진행 중인데, 아무도 기다리지 않습니다." });
+    step({ line: 7, stack: ["G4", "LD"],
+      desc: 'forEach가 끝났으니 다음 동기 코드 console.log("done")이 곧바로 실행됩니다.' });
+    step({ line: 7, stack: ["G4"], log: ["done"], hold: 1.2,
+      desc: '"done" 출력 — 저장은 아직 하나도 끝나지 않았습니다!' });
+    step({ line: null, stack: [], runtime: [], micro: ["C1", "C2"], proms: { Q1: "fulfilled", Q2: "fulfilled" },
+      desc: "전역 코드 종료 후 저장 완료 — continuation들이 Microtask Queue에 등록됩니다." });
+    step({ line: 4, stack: ["C1"], micro: ["C2"], loop: "micro",
+      desc: "Event Loop가 continuation을 이동 — 이제서야 후속 코드가 실행됩니다." });
+    step({ line: 4, stack: [], log: ["done", "saved a"], hold: 0.7,
+      desc: '"saved a" 출력.' });
+    step({ line: 4, stack: ["C2"], micro: [], loop: "micro", hold: 0.7,
+      desc: "다음 microtask 처리." });
+    step({ line: 4, stack: [], log: ["done", "saved a", "saved b"],
+      desc: '"saved b" 출력 — 전부 "done" 이후입니다.' });
+    step({ line: 9, final: true, loop: "idle", hold: 2,
+      desc: "완료를 기다려야 한다면 forEach 대신 items.map으로 Promise 배열을 만들어 await Promise.all(…) 하세요.",
+      note: 'forEach + async = "기다리지 않는 실행". 흔한 버그의 원인입니다.' });
+  }),
+};
+
+/* ── scenario registry ── */
+const SCENARIOS = [
+  {
+    id: "main", name: "이벤트 루프 기본",
+    code: CODE, cards: CARDS, proms: PROMS,
+    logMeta: { "1": "L1 · 동기", "3": "L8 · 동기 (async 내부)", "6": "L19 · 동기", "4": "L10 · microtask", "5": "L16 · microtask", "2": "L4 · task" },
+    doneText: "1 → 3 → 6 → 4 → 5 → 2 — 실행 완료",
+    steps: MAIN_STEPS,
+  },
+  BLOCK, SERIAL, FOREACH,
+];
+let SC = SCENARIOS[0];
+let STEPS = SC.steps;
+
+/* ════════════════════════════════════════════════════════════
+   3. RENDER — code panel
+   ════════════════════════════════════════════════════════════ */
+const codeEl = document.getElementById("code");
+function hl(src) {
+  let esc = src.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const strs = [], cmts = [];
+  esc = esc.replace(/"[^"]*"/g, m => { strs.push(m); return "\u0001"; });
+  esc = esc.replace(/\/\/.*$/g, m => { cmts.push(m); return "\u0002"; });
+  esc = esc
+    .replace(/=&gt;/g, '<span class="tok-arrow">=&gt;</span>')
+    .replace(/\b(async|function|await|return|const|let|while|new)\b/g, '<span class="tok-kw">$1</span>')
+    .replace(/\b(console|Promise|Date|Math)\b/g, '<span class="tok-obj">$1</span>')
+    .replace(/\b([A-Za-z_$][\w$]*)(?=\()/g, '<span class="tok-fn">$1</span>')
+    .replace(/\b(\d+)\b/g, '<span class="tok-num">$1</span>');
+  let ci = 0;
+  esc = esc.replace(/\u0002/g, () => `<span class="tok-cmt">${cmts[ci++]}</span>`);
+  let si = 0;
+  return esc.replace(/\u0001/g, () => `<span class="tok-str">${strs[si++]}</span>`);
+}
+function renderCode() {
+  codeEl.innerHTML = "";
+  SC.code.forEach((src, i) => {
+    const row = document.createElement("div");
+    row.className = "cl"; row.dataset.i = i;
+    row.innerHTML = `<span class="ln">${i + 1}</span><span class="src-code">${hl(src) || "&nbsp;"}</span>`;
+    codeEl.appendChild(row);
+  });
+}
+
+/* ════════════════════════════════════════════════════════════
+   4. RECONCILER — FLIP card movement between zones
+   ════════════════════════════════════════════════════════════ */
+const zones = {
+  stack:   document.getElementById("z-stack"),
+  runtime: document.getElementById("z-runtime"),
+  micro:   document.getElementById("z-micro"),
+  task:    document.getElementById("z-task"),
+};
+const ghosts = document.getElementById("ghosts");
+const cardEls = new Map();
+
+function makeCard(id) {
+  const def = SC.cards[id];
+  const el = document.createElement("div");
+  el.className = `card k-${def.kind}`;
+  el.dataset.id = id;
+  el.innerHTML = `<span class="c-label">${def.label}</span>` +
+    (def.sub ? `<span class="c-sub">${def.sub}</span>` : "") +
+    `<span class="c-badge"></span>`;
+  cardEls.set(id, el);
+  return el;
+}
+
+function setBadge(el, txt) {
+  el.dataset.badge = txt;
+  el.querySelector(".c-badge").textContent = txt;
+}
+
+function ghostExit(el, rect) {
+  const g = el.cloneNode(true);
+  g.style.left = rect.left + "px";
+  g.style.top = rect.top + "px";
+  g.style.width = rect.width + "px";
+  ghosts.appendChild(g);
+  g.animate(
+    [{ opacity: 1, transform: "none", filter: "blur(0)" },
+     { opacity: 0, transform: "translateY(-16px) scale(0.94)", filter: "blur(5px)" }],
+    { duration: D(420), easing: EASE, fill: "forwards" }
+  ).onfinish = () => g.remove();
+}
+
+/* step activity flash — highlight the panel where something just arrived */
+let lastLoop = "idle";
+function flashPanel(el) {
+  const panel = el && el.closest(".panel");
+  if (!panel) return;
+  panel.classList.add("flash");
+  clearTimeout(panel._flashT);
+  panel._flashT = setTimeout(() => panel.classList.remove("flash"), Math.max(550, 1000 / SPEED));
+}
+
+function applyStep(idx, animate = true) {
+  const st = STEPS[idx];
+
+  /* -- snapshot old positions + zones -- */
+  const before = new Map(), zoneBefore = new Map();
+  cardEls.forEach((el, id) => {
+    if (el.isConnected) {
+      before.set(id, el.getBoundingClientRect());
+      const z = el.closest(".zone-body");
+      if (z) zoneBefore.set(id, z.id);
+    }
+  });
+
+  /* -- desired placement -- */
+  const want = { stack: st.stack, runtime: st.runtime, micro: st.micro, task: st.task };
+  const desired = new Set([].concat(st.stack, st.runtime, st.micro, st.task));
+
+  /* remove cards no longer anywhere (ghost exit) */
+  cardEls.forEach((el, id) => {
+    if (el.isConnected && !desired.has(id)) {
+      const r = before.get(id);
+      if (animate && r) ghostExit(el, r);
+      el.remove();
+    }
+  });
+
+  /* place cards zone by zone, in order */
+  const moved = [], entered = [], zoneHit = new Set();
+  for (const [zname, ids] of Object.entries(want)) {
+    const zone = zones[zname];
+    ids.forEach(id => {
+      let el = cardEls.get(id);
+      const isNew = !el || !el.isConnected;
+      if (!el) el = makeCard(id);
+      if (zoneBefore.get(id) !== zone.id) zoneHit.add(zname);
+      zone.appendChild(el);
+      /* badge by zone / position */
+      if (zname === "stack")        setBadge(el, ids[ids.length - 1] === id ? "Executing" : "");
+      else if (zname === "runtime") setBadge(el, "Waiting");
+      else                          setBadge(el, "Queued");
+      el.classList.toggle("executing", zname === "stack" && ids[ids.length - 1] === id);
+      (isNew ? entered : moved).push(el);
+    });
+  }
+
+  /* -- FLIP -- */
+  if (animate) {
+    moved.forEach(el => {
+      const prev = before.get(el.dataset.id);
+      if (!prev) return;
+      const now = el.getBoundingClientRect();
+      const dx = prev.left - now.left, dy = prev.top - now.top;
+      const sw = prev.width / now.width || 1;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(sw - 1) < 0.01) return;
+      el.getAnimations().forEach(a => a.cancel());
+      el.style.transformOrigin = "top left";
+      el.animate(
+        [{ transform: `translate(${dx}px, ${dy}px) scale(${sw}, 1)` }, { transform: "none" }],
+        { duration: D(640), easing: EASE }
+      );
+    });
+    entered.forEach(el => {
+      el.getAnimations().forEach(a => a.cancel());
+      el.animate(
+        [{ opacity: 0, transform: "translateY(14px) scale(0.97)", filter: "blur(6px)" },
+         { opacity: 1, transform: "none", filter: "blur(0)" }],
+        { duration: D(520), easing: EASE }
+      );
+    });
+    zoneHit.forEach(z => flashPanel(zones[z]));
+  }
+
+  /* -- counters -- */
+  const setCnt = (id, n) => {
+    const el = document.getElementById(id);
+    el.textContent = n; el.classList.toggle("hot", n > 0);
+  };
+  setCnt("cnt-stack", st.stack.length);
+  setCnt("cnt-micro", st.micro.length);
+  setCnt("cnt-task",  st.task.length);
+
+  /* -- code highlight -- */
+  codeEl.querySelectorAll(".cl").forEach(r => r.classList.toggle("active", +r.dataset.i === st.line));
+  if (st.line != null) {
+    const row = codeEl.querySelector(`.cl[data-i="${st.line}"]`);
+    row && row.scrollIntoView({ block: "nearest", behavior: REDUCED ? "auto" : "smooth" });
+  }
+
+  /* -- console log -- */
+  const con = document.getElementById("console");
+  const lines = [...con.querySelectorAll(".log-line")];
+  if (st.log.length < lines.length) {
+    lines.slice(st.log.length).forEach(l => l.remove());
+    con.querySelector(".console-done")?.remove();
+  } else {
+    for (let i = lines.length; i < st.log.length; i++) {
+      const v = st.log[i];
+      const li = document.createElement("div");
+      li.className = "log-line";
+      li.innerHTML = `<span class="gt">›</span><span class="val">${v}</span><span class="src">${SC.logMeta[v] || ""}</span>`;
+      con.appendChild(li);
+      if (animate) {
+        li.animate(
+          [{ opacity: 0, transform: "translateX(-8px)" }, { opacity: 1, transform: "none" }],
+          { duration: D(420), easing: EASE }
+        );
+        const kindPulse = { 4: PULSE.violet, 5: PULSE.violet, 2: PULSE.cyan };
+        GL.pulse(0.85, kindPulse[v] || PULSE.gold);
+        flashPanel(con);
+      }
+      con.scrollTop = con.scrollHeight;
+    }
+  }
+  if (!st.final) con.querySelector(".console-done")?.remove();
+  if (st.final && !con.querySelector(".console-done")) {
+    const done = document.createElement("div");
+    done.className = "console-done";
+    done.textContent = SC.doneText;
+    con.appendChild(done);
+    con.scrollTop = con.scrollHeight;
+    if (animate) GL.pulse(1, PULSE.green);
+  }
+  document.body.classList.toggle("final", !!st.final);
+
+  /* -- event loop panel -- */
+  document.querySelectorAll(".lp").forEach(p => p.classList.toggle("active", p.dataset.phase === st.loop));
+  const ln = document.getElementById("loop-note");
+  ln.classList.toggle("on", st.loop !== "idle");
+  ln.textContent = st.loop === "idle"
+    ? "동기 코드 실행 중에는 대기합니다. 코드를 실행하는 것은 Event Loop가 아니라 Call Stack입니다."
+    : "Event Loop 동작 중 — 작업을 실행하지 않고, 실행 가능한 작업을 Call Stack으로 이동시킵니다.";
+  if (animate && st.loop === "render") GL.pulse(0.9, PULSE.green);
+  if (animate && (st.loop === "micro")) GL.pulse(0.35, PULSE.violet);
+  if (animate && (st.loop === "task"))  GL.pulse(0.35, PULSE.cyan);
+  if (animate && st.loop !== "idle" && st.loop !== lastLoop) flashPanel(ln);
+  lastLoop = st.loop;
+
+  /* -- promise chips -- */
+  const strip = document.getElementById("proms");
+  const keys = Object.keys(st.proms);
+  strip.hidden = keys.length === 0;
+  keys.forEach(k => {
+    let chip = strip.querySelector(`[data-pid="${k}"]`);
+    if (!chip) {
+      chip = document.createElement("span");
+      chip.className = "prom-chip"; chip.dataset.pid = k;
+      chip.innerHTML = `${SC.proms[k]} <span class="st"></span>`;
+      strip.appendChild(chip);
+      if (animate) chip.animate(
+        [{ opacity: 0, transform: "translateY(6px)" }, { opacity: 1, transform: "none" }],
+        { duration: D(420), easing: EASE });
+    }
+    chip.dataset.state = st.proms[k];
+    chip.querySelector(".st").textContent = st.proms[k];
+  });
+  [...strip.querySelectorAll(".prom-chip")].forEach(ch => { if (!(ch.dataset.pid in st.proms)) ch.remove(); });
+
+  /* -- description -- */
+  const descEl = document.getElementById("desc");
+  const noteEl = document.getElementById("note");
+  const write = () => {
+    descEl.textContent = st.desc;
+    noteEl.textContent = st.note || "";
+    descEl.classList.remove("swap");
+  };
+  if (animate && !REDUCED) {
+    descEl.classList.add("swap");
+    setTimeout(write, 180 / SPEED);
+  } else write();
+
+  /* -- progress -- */
+  document.getElementById("step-cur").textContent = String(idx + 1).padStart(2, "0");
+  document.getElementById("progress").style.width = (idx / (STEPS.length - 1)) * 100 + "%";
+}
+
+/* ════════════════════════════════════════════════════════════
+   5. PLAYBACK
+   ════════════════════════════════════════════════════════════ */
+let cur = 0, playing = false, timer = null;
+const BASE_HOLD = 3400;
+
+const icPlay = document.getElementById("ic-play");
+const icPause = document.getElementById("ic-pause");
+
+function renderPlayBtn() {
+  icPlay.style.display  = playing ? "none" : "";
+  icPause.style.display = playing ? "" : "none";
+}
+function stop() {
+  playing = false;
+  clearTimeout(timer); timer = null;
+  renderPlayBtn();
+}
+function scheduleNext() {
+  clearTimeout(timer);
+  const hold = BASE_HOLD * (STEPS[cur].hold || 1) / SPEED;
+  timer = setTimeout(() => {
+    if (cur >= STEPS.length - 1) { stop(); return; }
+    cur++; applyStep(cur);
+    scheduleNext();
+  }, hold);
+}
+function play() {
+  if (cur >= STEPS.length - 1) { cur = 0; applyStep(cur); }
+  playing = true; renderPlayBtn();
+  scheduleNext();
+}
+function goto(i, animate = true) {
+  cur = Math.max(0, Math.min(STEPS.length - 1, i));
+  applyStep(cur, animate);
+  if (playing) scheduleNext();
+}
+
+document.getElementById("btn-play").addEventListener("click", () => playing ? stop() : play());
+document.getElementById("btn-next").addEventListener("click", () => { stop(); goto(cur + 1); });
+document.getElementById("btn-prev").addEventListener("click", () => { stop(); goto(cur - 1); });
+document.getElementById("btn-restart").addEventListener("click", () => { stop(); goto(0); });
+
+/* speed control */
+const speedEl = document.getElementById("speed");
+[0.5, 1, 1.5, 2].forEach(v => {
+  const b = document.createElement("button");
+  b.textContent = v + "×";
+  b.classList.toggle("on", v === 1);
+  b.addEventListener("click", () => {
+    SPEED = v;
+    speedEl.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+    if (playing) scheduleNext();
+  });
+  speedEl.appendChild(b);
+});
+
+/* keyboard */
+addEventListener("keydown", e => {
+  if (e.repeat && e.code === "Space") return;
+  switch (e.code) {
+    case "Space":      e.preventDefault(); playing ? stop() : play(); break;
+    case "ArrowRight": e.preventDefault(); stop(); goto(cur + 1); break;
+    case "ArrowLeft":  e.preventDefault(); stop(); goto(cur - 1); break;
+    case "KeyR":       stop(); goto(0); break;
+    case "Digit1": case "Digit2": case "Digit3": case "Digit4": {
+      const i = +e.code.slice(-1) - 1;
+      if (SCENARIOS[i]) loadScenario(i);
+      break;
+    }
+  }
+});
+
+/* ════════════════════════════════════════════════════════════
+   6. SCENARIO SWITCHING
+   ════════════════════════════════════════════════════════════ */
+const tabsEl = document.getElementById("sc-tabs");
+SCENARIOS.forEach((sc, i) => {
+  const b = document.createElement("button");
+  b.className = "sc-tab";
+  b.innerHTML = `<span class="no">${i + 1}</span>${sc.name}`;
+  b.addEventListener("click", () => loadScenario(i));
+  tabsEl.appendChild(b);
+});
+
+function loadScenario(i, startStep = 0) {
+  stop();
+  SC = SCENARIOS[i];
+  STEPS = SC.steps;
+  cardEls.forEach(el => el.remove());
+  cardEls.clear();
+  ghosts.innerHTML = "";
+  document.getElementById("console").innerHTML = '<div class="placeholder">출력 대기 중…</div>';
+  document.querySelectorAll("#proms .prom-chip").forEach(ch => ch.remove());
+  renderCode();
+  tabsEl.querySelectorAll(".sc-tab").forEach((t, ti) => t.classList.toggle("on", ti === i));
+  document.getElementById("step-total").textContent = String(STEPS.length).padStart(2, "0");
+  cur = Math.max(0, Math.min(STEPS.length - 1, startStep));
+  applyStep(cur, false);
+}
+
+/* init — ?sc=N&step=N deep links supported */
+const q = new URLSearchParams(location.search);
+const initSc = parseInt(q.get("sc"), 10);
+const initStep = parseInt(q.get("step"), 10);
+loadScenario(
+  Number.isInteger(initSc) ? Math.max(0, Math.min(SCENARIOS.length - 1, initSc - 1)) : 0,
+  Number.isInteger(initStep) ? initStep - 1 : 0
+);
+if (q.get("play") === "1") play();
+GL.pulse(0.6, PULSE.gold);
+</script>
+</body>
+</html>
