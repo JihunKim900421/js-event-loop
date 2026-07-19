@@ -120,6 +120,20 @@ header .sub { color: var(--text-3); font-size: 15px; margin-top: 4px; }
 .priority b { color: var(--text-2); font-weight: 600; }
 .priority .sep { color: var(--text-3); opacity: 0.6; }
 
+/* ---------- domain chips — JS 엔진 vs 호스트 환경 ---------- */
+.head-side { display: flex; flex-direction: column; align-items: flex-end; gap: 7px; }
+.domain {
+  flex: none; font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+  padding: 2px 8px; border-radius: 999px; border: 1px solid; white-space: nowrap;
+}
+.domain.engine { color: var(--gold); border-color: rgba(245,192,68,0.45); background: var(--gold-dim); }
+.domain.host   { color: var(--blue); border-color: rgba(123,166,245,0.45); background: var(--blue-dim); }
+.domain-legend {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; color: var(--text-3); white-space: nowrap; padding-right: 4px;
+}
+.domain-legend .sep { opacity: 0.6; }
+
 /* ---------- stage grid ---------- */
 .stage {
   flex: 1; min-height: 0;
@@ -135,7 +149,7 @@ header .sub { color: var(--text-3); font-size: 15px; margin-top: 4px; }
   border: 1px solid var(--hairline-soft);
   border-radius: var(--r-lg);
   padding: 5px;
-  display: flex; flex-direction: column; min-height: 0;
+  display: flex; flex-direction: column; min-height: 0; min-width: 0;
   box-shadow: 0 24px 60px -32px rgba(0,0,0,0.8);
 }
 .panel-core {
@@ -157,7 +171,7 @@ header .sub { color: var(--text-3); font-size: 15px; margin-top: 4px; }
 .panel-head .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 .panel-head .name {
   font-size: 13.5px; font-weight: 600; letter-spacing: 0.14em;
-  text-transform: uppercase; color: var(--text-2);
+  text-transform: uppercase; color: var(--text-2); white-space: nowrap;
 }
 .panel-head .hint { font-size: 12px; color: var(--text-3); margin-left: auto; text-align: right; }
 .panel-head .count {
@@ -565,6 +579,11 @@ body.final .console-panel .panel-core { border-color: rgba(110,231,160,0.35); bo
 /* ============================================================
    RESPONSIVE
    ============================================================ */
+/* 3열 그리드가 유지되지만 폭이 빠듯한 구간 — 상단 실행부 패널의
+   힌트가 세로로 구겨지므로 숨긴다 (이름 + 영역 칩만 표시) */
+@media (min-width: 1081px) and (max-width: 1450px) {
+  .row-exec .panel-head .hint { display: none; }
+}
 @media (max-width: 1080px) {
   body { overflow: auto; }
   .app { height: auto; min-height: 100dvh; padding: 16px 14px 0; }
@@ -601,9 +620,16 @@ body.final .console-panel .panel-core { border-color: rgba(110,231,160,0.35); bo
       <h1>단일 스레드는 어떻게 <em>비동기</em>를 처리하는가</h1>
       <p class="sub">코드 하나가 Call Stack · Runtime API · Queue · Event Loop 사이를 이동하는 전 과정</p>
     </div>
-    <div class="priority">
-      <b>실행 우선순위</b><span class="sep">│</span>
-      동기 코드 <span class="sep">→</span> Microtask <b>전체</b> <span class="sep">→</span> Render <span class="sep">→</span> Task <b>하나</b> <span class="sep">↺</span>
+    <div class="head-side">
+      <div class="priority">
+        <b>실행 우선순위</b><span class="sep">│</span>
+        동기 코드 <span class="sep">→</span> Microtask <b>전체</b> <span class="sep">→</span> Render <span class="sep">→</span> Task <b>하나</b> <span class="sep">↺</span>
+      </div>
+      <div class="domain-legend">
+        <span class="domain engine">JS 엔진</span><span>Call Stack(실행) + Heap(객체 저장)</span>
+        <span class="sep">│</span>
+        <span class="domain host">호스트 환경</span><span>브라우저/Node.js — 대기 작업 · 큐 · Event Loop</span>
+      </div>
     </div>
   </header>
 
@@ -648,10 +674,11 @@ body.final .console-panel .panel-core { border-color: rgba(110,231,160,0.35); bo
             <div class="panel-head">
               <span class="dot" style="background:var(--gold)"></span>
               <span class="name">Call Stack</span>
+              <span class="domain engine">JS 엔진</span>
               <span class="count" id="cnt-stack">0</span>
             </div>
             <div class="zone-body v" id="z-stack" data-empty="EMPTY — 실행할 코드 없음"></div>
-            <div class="stack-base">JavaScript 엔진 · 한 번에 하나씩 실행</div>
+            <div class="stack-base">JavaScript 엔진(Call Stack + Heap) · 한 번에 하나씩 실행</div>
           </div>
         </div>
         <div class="panel machine" style="--ac:var(--blue)">
@@ -659,6 +686,7 @@ body.final .console-panel .panel-core { border-color: rgba(110,231,160,0.35); bo
             <div class="panel-head">
               <span class="dot" style="background:var(--blue)"></span>
               <span class="name">Runtime APIs</span>
+              <span class="domain host">호스트 환경</span>
               <span class="hint">Timer · Network · DOM Event</span>
             </div>
             <div class="zone-body vt" id="z-runtime" data-empty="위임된 작업 없음"></div>
@@ -669,6 +697,7 @@ body.final .console-panel .panel-core { border-color: rgba(110,231,160,0.35); bo
 
       <div class="prom-strip" id="proms" hidden>
         <span class="lab">Promises</span>
+        <span class="domain engine">JS 엔진</span>
       </div>
 
       <div class="row-queue">
@@ -677,7 +706,8 @@ body.final .console-panel .panel-core { border-color: rgba(110,231,160,0.35); bo
             <div class="panel-head">
               <span class="dot" style="background:var(--violet)"></span>
               <span class="name">Microtask Queue</span>
-              <span class="hint">.then / await 이후 · 먼저, 전부 처리</span>
+              <span class="domain host">호스트 환경</span>
+              <span class="hint">완료된 Promise의 후속 코드(.then / await 이후)가 실행을 기다리는 대기열 — 먼저, 전부 처리</span>
               <span class="count" id="cnt-micro">0</span>
             </div>
             <div class="zone-body h" id="z-micro" data-empty="EMPTY">
@@ -690,7 +720,8 @@ body.final .console-panel .panel-core { border-color: rgba(110,231,160,0.35); bo
             <div class="panel-head">
               <span class="dot" style="background:var(--cyan)"></span>
               <span class="name">Task Queue</span>
-              <span class="hint">setTimeout · Event — Macro Task라고도 부름</span>
+              <span class="domain host">호스트 환경</span>
+              <span class="hint">완료된 타이머·이벤트 콜백(setTimeout · Event)이 실행을 기다리는 대기열 — Macro Task라고도 부름</span>
               <span class="count" id="cnt-task">0</span>
             </div>
             <div class="zone-body h" id="z-task" data-empty="EMPTY">
@@ -708,6 +739,7 @@ body.final .console-panel .panel-core { border-color: rgba(110,231,160,0.35); bo
           <div class="panel-head">
             <span class="dot" style="background:var(--gold)"></span>
             <span class="name">Event Loop</span>
+            <span class="domain host">호스트 환경</span>
             <span class="hint">순서 조정자</span>
           </div>
           <div class="loop-body">
@@ -1149,6 +1181,9 @@ const SERIAL = {
   id: "serial",
   name: "직렬 await vs Promise.all",
   code: [
+    '// 선언 생략 — getUser · getPosts:',
+    '// 각 1초 걸리는 네트워크 요청 함수',
+    '',
     '// ① 직렬 — 대기 시간이 더해진다',
     'const user  = await getUser();   // 약 1초',
     'const posts = await getPosts();  // 약 1초',
@@ -1179,34 +1214,35 @@ const SERIAL = {
   doneText: "직렬 ≈ 2초 · Promise.all ≈ 1초",
   steps: makeSteps(step => {
     step({ line: null, stack: ["G3"],
-      desc: "같은 두 네트워크 요청을 ① 직렬 await ② Promise.all로 처리할 때의 시간 차이를 봅니다." });
-    step({ line: 1, stack: ["G3", "FU"], proms: { PU: "pending" },
+      desc: "같은 두 네트워크 요청을 ① 직렬 await ② Promise.all로 처리할 때의 시간 차이를 봅니다.",
+      note: "최상위 await은 ES 모듈에서만 가능하므로, 이 시나리오만 Global이 아닌 Module Context에서 시작합니다." });
+    step({ line: 4, stack: ["G3", "FU"], proms: { PU: "pending" },
       desc: "getUser() 호출 — 요청을 Runtime API에 위임하고 pending Promise를 반환합니다." });
-    step({ line: 1, stack: [], runtime: ["NU"],
+    step({ line: 4, stack: [], runtime: ["NU"],
       desc: "await — 이 실행 흐름이 중단되고 스택에서 빠집니다. getPosts()는 아직 시작도 하지 않았습니다.",
       note: "독립적인 두 요청인데 뒤 요청이 앞 요청의 완료를 기다립니다." });
-    step({ line: 1, runtime: [], micro: ["CU"], proms: { PU: "fulfilled" },
+    step({ line: 4, runtime: [], micro: ["CU"], proms: { PU: "fulfilled" },
       desc: "약 1초 후 응답 — Promise fulfilled, continuation이 Microtask Queue에 등록됩니다." });
-    step({ line: 1, stack: ["CU"], micro: [], loop: "micro", log: ["user ← 1.0s"],
+    step({ line: 4, stack: ["CU"], micro: [], loop: "micro", log: ["user ← 1.0s"],
       desc: "Event Loop가 continuation을 Call Stack으로 — user에 결과가 할당됩니다." });
-    step({ line: 2, stack: ["CU", "FP"], loop: "idle", proms: { PU: "fulfilled", PP: "pending" },
+    step({ line: 5, stack: ["CU", "FP"], loop: "idle", proms: { PU: "fulfilled", PP: "pending" },
       desc: "재개된 코드가 이어서 getPosts() 호출 — 두 번째 요청이 이제서야 시작됩니다." });
-    step({ line: 2, stack: [], runtime: ["NP"], hold: 1.1,
+    step({ line: 5, stack: [], runtime: ["NP"], hold: 1.1,
       desc: "다시 await — 또 약 1초 대기. 첫 요청과 대기가 전혀 겹치지 않았습니다." });
-    step({ line: 2, runtime: [], micro: ["CP"], proms: { PU: "fulfilled", PP: "fulfilled" },
+    step({ line: 5, runtime: [], micro: ["CP"], proms: { PU: "fulfilled", PP: "fulfilled" },
       desc: "응답 도착 — continuation ② 등록." });
-    step({ line: 2, stack: ["CP"], micro: [], loop: "micro", log: ["user ← 1.0s", "posts ← 2.0s"],
+    step({ line: 5, stack: ["CP"], micro: [], loop: "micro", log: ["user ← 1.0s", "posts ← 2.0s"],
       desc: "posts 할당 — ① 직렬 방식 완료: 총 약 2초." });
-    step({ line: 5, stack: ["G3", "PALL"], loop: "idle", proms: { PL: "pending" },
+    step({ line: 8, stack: ["G3", "PALL"], loop: "idle", proms: { PL: "pending" },
       desc: "② Promise.all — 배열 안의 getUser(), getPosts()가 연달아 즉시 호출됩니다. (비교를 위해 새로 시작)" });
-    step({ line: 5, stack: [], runtime: ["NU2", "NP2"],
+    step({ line: 8, stack: [], runtime: ["NU2", "NP2"],
       desc: "두 요청이 Runtime API에서 함께 대기 — 코드가 병렬로 실행되는 것이 아니라 대기 시간이 겹치는 것입니다.",
       note: "비동기 ≠ 멀티스레드. JavaScript 실행은 여전히 한 번에 하나입니다." });
-    step({ line: 5, runtime: [], micro: ["CALL"], proms: { PL: "fulfilled" },
+    step({ line: 8, runtime: [], micro: ["CALL"], proms: { PL: "fulfilled" },
       desc: "약 1초 후 둘 다 완료 — Promise.all이 fulfilled 되고 continuation이 등록됩니다." });
-    step({ line: 5, stack: ["CALL"], micro: [], loop: "micro", log: ["user ← 1.0s", "posts ← 2.0s", "[u, p] ← 1.0s"],
+    step({ line: 8, stack: ["CALL"], micro: [], loop: "micro", log: ["user ← 1.0s", "posts ← 2.0s", "[u, p] ← 1.0s"],
       desc: "[u, p] 할당 — ② 방식 총 소요: 약 1초." });
-    step({ line: 10, stack: [], loop: "idle", final: true, hold: 2,
+    step({ line: 13, stack: [], loop: "idle", final: true, hold: 2,
       desc: "앞 결과가 다음 요청에 필요할 때만 직렬 await을 쓰세요. 독립적인 작업은 Promise.all로 시작해 대기를 겹치면 전체 시간이 가장 긴 작업만큼으로 줄어듭니다.",
       note: "직렬 = 1초 + 1초 / Promise.all = max(1초, 1초)" });
   }),
@@ -1219,6 +1255,9 @@ const FOREACH = {
   id: "foreach",
   name: "forEach + async 함정",
   code: [
+    '// 선언 생략 — saveItem:',
+    '// 저장 요청을 보내는 함수',
+    '',
     'const items = ["a", "b"];',
     '',
     'items.forEach(async (item) => {',
@@ -1243,35 +1282,35 @@ const FOREACH = {
     LD: { label: 'console.log("done")',  sub: "",                               kind: "sync"    },
   },
   proms: { Q1: 'cb("a") 반환 Promise', Q2: 'cb("b") 반환 Promise' },
-  logMeta: { "done": "L8 · 동기", "saved a": "L5 · microtask", "saved b": "L5 · microtask" },
+  logMeta: { "done": "L11 · 동기", "saved a": "L8 · microtask", "saved b": "L8 · microtask" },
   doneText: 'done → saved a → saved b — "done"이 먼저!',
   steps: makeSteps(step => {
     step({ line: null, stack: ["G4"],
       desc: 'forEach에 async 콜백을 넘기면 왜 "done"이 먼저 찍히는지 봅니다.' });
-    step({ line: 2, stack: ["G4", "FE"],
+    step({ line: 5, stack: ["G4", "FE"],
       desc: "items.forEach 시작 — 각 요소마다 async 콜백을 호출합니다." });
-    step({ line: 3, stack: ["G4", "FE", "A1"], runtime: ["S1"], proms: { Q1: "pending" },
+    step({ line: 6, stack: ["G4", "FE", "A1"], runtime: ["S1"], proms: { Q1: "pending" },
       desc: 'cb("a") 실행 — saveItem("a")를 위임하고 await에서 즉시 중단, pending Promise를 반환합니다.' });
-    step({ line: 3, stack: ["G4", "FE", "A2"], runtime: ["S1", "S2"], proms: { Q1: "pending", Q2: "pending" },
+    step({ line: 6, stack: ["G4", "FE", "A2"], runtime: ["S1", "S2"], proms: { Q1: "pending", Q2: "pending" },
       desc: '그런데 forEach는 그 Promise를 기다리지 않고 곧장 cb("b") 호출 — 역시 await에서 중단됩니다.',
       note: "forEach는 콜백의 반환값(Promise)을 완전히 무시합니다." });
-    step({ line: 5, stack: ["G4"],
+    step({ line: 8, stack: ["G4"],
       desc: "forEach 종료 — 저장 작업 2개는 아직 Runtime에서 진행 중인데, 아무도 기다리지 않습니다." });
-    step({ line: 7, stack: ["G4", "LD"],
+    step({ line: 10, stack: ["G4", "LD"],
       desc: 'forEach가 끝났으니 다음 동기 코드 console.log("done")이 곧바로 실행됩니다.' });
-    step({ line: 7, stack: ["G4"], log: ["done"], hold: 1.2,
+    step({ line: 10, stack: ["G4"], log: ["done"], hold: 1.2,
       desc: '"done" 출력 — 저장은 아직 하나도 끝나지 않았습니다!' });
     step({ line: null, stack: [], runtime: [], micro: ["C1", "C2"], proms: { Q1: "fulfilled", Q2: "fulfilled" },
       desc: "전역 코드 종료 후 저장 완료 — continuation들이 Microtask Queue에 등록됩니다." });
-    step({ line: 4, stack: ["C1"], micro: ["C2"], loop: "micro",
+    step({ line: 7, stack: ["C1"], micro: ["C2"], loop: "micro",
       desc: "Event Loop가 continuation을 이동 — 이제서야 후속 코드가 실행됩니다." });
-    step({ line: 4, stack: [], log: ["done", "saved a"], hold: 0.7,
+    step({ line: 7, stack: [], log: ["done", "saved a"], hold: 0.7,
       desc: '"saved a" 출력.' });
-    step({ line: 4, stack: ["C2"], micro: [], loop: "micro", hold: 0.7,
+    step({ line: 7, stack: ["C2"], micro: [], loop: "micro", hold: 0.7,
       desc: "다음 microtask 처리." });
-    step({ line: 4, stack: [], log: ["done", "saved a", "saved b"],
+    step({ line: 7, stack: [], log: ["done", "saved a", "saved b"],
       desc: '"saved b" 출력 — 전부 "done" 이후입니다.' });
-    step({ line: 9, final: true, loop: "idle", hold: 2,
+    step({ line: 12, final: true, loop: "idle", hold: 2,
       desc: "완료를 기다려야 한다면 forEach 대신 items.map으로 Promise 배열을 만들어 await Promise.all(…) 하세요.",
       note: 'forEach + async = "기다리지 않는 실행". 흔한 버그의 원인입니다.' });
   }),
